@@ -7,7 +7,6 @@ from typing import Any, AsyncGenerator, Dict, List, Optional, Type
 from aiochclient.exceptions import ChClientError
 from aiochclient.http_clients.abc import HttpClientABC
 from aiochclient.records import FromJsonFabric, Record, RecordsFabric
-from aiochclient.sql import sqlparse
 
 # Optional cython extension:
 try:
@@ -141,11 +140,13 @@ class ChClient:
         query_params: Optional[Dict[str, Any]] = None,
         query_id: str = None,
         decode: bool = True,
+        need_fetch: bool = True,
     ) -> AsyncGenerator[Record, None]:
         query_params = self._prepare_query_params(query_params)
         if query_params:
             query = query.format(**query_params)
-        need_fetch, is_json, statement_type = self._parse_squery(query)
+
+        is_json = 'JSONEachRow' in query
 
         if not is_json and json:
             query += " FORMAT JSONEachRow"
@@ -155,7 +156,7 @@ class ChClient:
             query += " FORMAT TSVWithNamesAndTypes"
 
         if args:
-            if statement_type != 'INSERT':
+            if 'INSERT' in query:
                 raise ChClientError(
                     "It is possible to pass arguments only for INSERT queries"
                 )
@@ -232,7 +233,7 @@ class ChClient:
         :return: Nothing.
         """
         async for _ in self._execute(
-            query, *args, json=json, query_params=params, query_id=query_id
+            query, *args, json=json, query_params=params, query_id=query_id, need_fetch=False,
         ):
             return None
 
@@ -414,24 +415,3 @@ class ChClient:
         )
         async for row in self.iterate(query, *args):
             yield row
-
-    @staticmethod
-    def _parse_squery(query):
-        statement = sqlparse.parse(query)[0]
-        statement_type = statement.get_type()
-        if statement_type in ('SELECT', 'SHOW', 'DESCRIBE', 'EXISTS'):
-            need_fetch = True
-        else:
-            need_fetch = False
-
-        fmt = statement.token_matching(
-            (lambda tk: tk.match(sqlparse.tokens.Keyword, 'FORMAT'),), 0
-        )
-        if fmt:
-            is_json = statement.token_matching(
-                (lambda tk: tk.match(None, ['JSONEachRow']),),
-                statement.token_index(fmt) + 1,
-            )
-        else:
-            is_json = False
-        return need_fetch, is_json, statement_type
